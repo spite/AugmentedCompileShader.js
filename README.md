@@ -1,9 +1,9 @@
 # Augmented compileShader
 Augmented WebGLRenderingContext.prototype.compileShader, and GPUDevice.prototype.createShaderModule
 
-[![npm](https://img.shields.io/npm/v/augmented-compile-shader.svg)](https://www.npmjs.com/package/augmented-compile-shader)
-
 Small library to augment compileShader and provide an output of the errors directly in the DOM, instead of dumping all data in the console.
+
+[![npm](https://img.shields.io/npm/v/augmented-compile-shader.svg)](https://www.npmjs.com/package/augmented-compile-shader)
 
 #### Demo ####
 - **[Live shader editor](https://spite.github.io/AugmentedCompileShader.js/demo/)**: a fragment shader compiled as you type, in GLSL with WebGL 2 or in WGSL with WebGPU, with its errors reported at the top of the page
@@ -69,4 +69,4 @@ As always: forks, pull requests and code critiques are welcome!
 
 MIT licensed
 
-Copyright (C) 2015 Jaume Sanchez Elias, http://www.clicktorelease.com
+Copyright (C) 2015 Jaume Sanchez Elias, https://www.clicktorelease.com
