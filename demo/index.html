@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<title>Augmented compileShader - Demo</title>
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<style>
+		*{ box-sizing: border-box; margin: 0; padding: 0; }
+		body{ overflow: hidden; background: #111; color: #eee; font-family: system-ui, sans-serif; font-size: 14px; }
+		canvas{ position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: block; }
+		#panel{ position: absolute; left: 20px; bottom: 20px; width: min( 560px, calc( 100% - 40px ) ); background: rgba( 0, 0, 0, .7 ); padding: 14px; border-radius: 6px; }
+		#panel p{ margin-bottom: 8px; line-height: 1.4; }
+		#panel a{ color: inherit; }
+		textarea{ width: 100%; height: 260px; background: #1b1b1b; color: #eee; border: 1px solid #444; border-radius: 4px; padding: 8px; font-family: ui-monospace, monaco, monospace; font-size: 12px; line-height: 1.4; tab-size: 2; resize: vertical; white-space: pre; }
+		button{ margin: 8px 8px 0 0; padding: 5px 10px; background: #333; color: #eee; border: 1px solid #555; border-radius: 4px; font: inherit; cursor: pointer; }
+		button:hover{ background: #444; }
+	</style>
+</head>
+<body>
+	<canvas id="canvas"></canvas>
+	<div id="panel">
+		<p><b>Augmented compileShader</b> · <a href="https://github.com/spite/AugmentedCompileShader.js">GitHub</a></p>
+		<p>The fragment shader below is compiled as you type. Its errors show up at the top of the page, put there by the library. The canvas keeps the last shader that worked.</p>
+		<textarea id="source" spellcheck="false"></textarea>
+		<button id="fix">Working shader</button><button id="break">Shader with errors</button><button id="link">Link error</button>
+	</div>
+	<script type="module">
+import { clear } from '../src/AugmentedCompileShader.js';
+
+const canvas = document.getElementById( 'canvas' );
+const textarea = document.getElementById( 'source' );
+const gl = canvas.getContext( 'webgl2' );
+
+const vertexSource = `#version 300 es
+in vec2 position;
+out vec2 vUv;
+void main() {
+	vUv = position * .5 + .5;
+	gl_Position = vec4( position, 0., 1. );
+}`;
+
+const working = `#version 300 es
+precision highp float;
+
+uniform float time;
+uniform vec2 resolution;
+in vec2 vUv;
+out vec4 color;
+
+void main() {
+	vec2 p = ( vUv - .5 ) * vec2( resolution.x / resolution.y, 1. );
+	float d = length( p );
+	float rings = .5 + .5 * sin( 40. * d - 3. * time );
+	vec3 c = mix( vec3( .14, .48, .63 ), vec3( .93, .42, .35 ), rings );
+	color = vec4( c * smoothstep( .9, .2, d ), 1. );
+}`;
+
+const broken = working
+	.replace( '3. * time', '3. * speed' )
+	.replace( 'vec3 c = mix', 'vec2 c = mix' );
+
+// asks for a varying that the vertex shader doesn't write
+const unlinked = working.replace( 'in vec2 vUv;', 'in vec2 vUv;\nin vec3 vNormal;' ).replace( 'smoothstep( .9, .2, d )', 'smoothstep( .9, .2, d ) * vNormal.z' );
+
+gl.bindBuffer( gl.ARRAY_BUFFER, gl.createBuffer() );
+gl.bufferData( gl.ARRAY_BUFFER, new Float32Array( [ - 1, - 1, 3, - 1, - 1, 3 ] ), gl.STATIC_DRAW );
+
+let program = null;
+
+function compile( type, source ) {
+
+	const shader = gl.createShader( type );
+	gl.shaderSource( shader, source );
+	gl.compileShader( shader );
+	return shader;
+
+}
+
+function build() {
+
+	// the report of the previous attempt goes away
+	clear();
+
+	const next = gl.createProgram();
+	gl.attachShader( next, compile( gl.VERTEX_SHADER, vertexSource ) );
+	gl.attachShader( next, compile( gl.FRAGMENT_SHADER, textarea.value ) );
+	gl.bindAttribLocation( next, 0, 'position' );
+	gl.linkProgram( next );
+
+	if ( ! gl.getProgramParameter( next, gl.LINK_STATUS ) ) return;
+
+	program = next;
+
+}
+
+function set( source ) {
+
+	textarea.value = source;
+	build();
+
+}
+
+textarea.addEventListener( 'input', build );
+textarea.addEventListener( 'keydown', e => {
+
+	if ( e.key !== 'Tab' ) return;
+	e.preventDefault();
+	textarea.setRangeText( '\t', textarea.selectionStart, textarea.selectionEnd, 'end' );
+	build();
+
+} );
+document.getElementById( 'fix' ).addEventListener( 'click', () => set( working ) );
+document.getElementById( 'break' ).addEventListener( 'click', () => set( broken ) );
+document.getElementById( 'link' ).addEventListener( 'click', () => set( unlinked ) );
+
+// the canvas starts with the working shader, the editor with the broken one
+set( working );
+set( broken );
+
+function render( time ) {
+
+	requestAnimationFrame( render );
+
+	const w = Math.floor( canvas.clientWidth * devicePixelRatio );
+	const h = Math.floor( canvas.clientHeight * devicePixelRatio );
+	if ( canvas.width !== w || canvas.height !== h ) { canvas.width = w; canvas.height = h; }
+
+	if ( program === null ) return;
+
+	gl.viewport( 0, 0, w, h );
+	gl.useProgram( program );
+	gl.uniform1f( gl.getUniformLocation( program, 'time' ), time / 1000 );
+	gl.uniform2f( gl.getUniformLocation( program, 'resolution' ), w, h );
+	gl.enableVertexAttribArray( 0 );
+	gl.vertexAttribPointer( 0, 2, gl.FLOAT, false, 0, 0 );
+	gl.drawArrays( gl.TRIANGLES, 0, 3 );
+
+}
+
+requestAnimationFrame( render );
+	</script>
+</body>
+</html>
