@@ -1,7 +1,7 @@
 {
   "name": "augmented-compile-shader",
   "version": "1.0.0",
-  "description": "Shows the errors of WebGL shaders in the page, instead of the console",
+  "description": "Shows the errors of WebGL and WebGPU shaders in the page, instead of the console",
   "type": "module",
   "main": "src/AugmentedCompileShader.js",
   "module": "src/AugmentedCompileShader.js",
@@ -26,6 +26,8 @@
     "compile",
     "GLSL",
     "webgl2",
+    "webgpu",
+    "WGSL",
     "three",
     "threejs",
     "debug"

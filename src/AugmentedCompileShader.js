@@ -8,12 +8,17 @@ const css = `#shaderReport{ box-sizing: border-box; position: fixed; left: 0; to
 	#shaderReport li p{ padding: 0; margin: 0 }
 	#shaderReport li:nth-child(odd){ background-color: #c9542b }
 	#shaderReport li p:first-child{ color: #eee }
-	#shaderReport li p:last-child{ white-space: pre-wrap }`;
+	#shaderReport li p:last-child{ white-space: pre-wrap }
+	#shaderReport li.warning, #shaderReport li.warning:nth-child(odd){ background-color: #a87400 }
+	#shaderReport li u{ text-decoration: underline wavy; background-color: rgba( 255, 255, 255, .2 ) }`;
 
 const hooks = [];
 
 let style = null;
 let report = null;
+
+// the results that arrive after a clear() belong to what was cleared
+let generation = 0;
 
 function hook( f, c ) {
 
@@ -50,23 +55,27 @@ function getReport() {
 
 }
 
-function addError( error, where, code ) {
+function addError( error, where, code, start = 0, length = 0, level = 'error' ) {
 
 	const list = getReport();
 
 	const title = document.createElement( 'p' );
 	const message = document.createElement( 'b' );
 	message.textContent = error;
-	title.append( 'ERROR "', message, '" ' + where );
+	title.append( level.toUpperCase() + ' "', message, '" ' + where );
 
+	// the part of the line that the error is about, when it's known
 	const line = document.createElement( 'p' );
-	line.textContent = code;
+	const mark = document.createElement( 'u' );
+	mark.textContent = code.slice( start, start + length );
+	line.append( code.slice( 0, start ), mark, code.slice( start + length ) );
 
 	// the same error is listed once
 	const key = title.textContent + '\n' + code;
 	for ( const item of list.children ) if ( item.dataset.key === key ) return;
 
 	const li = document.createElement( 'li' );
+	li.className = level;
 	li.dataset.key = key;
 	li.append( title, line );
 	list.appendChild( li );
@@ -117,7 +126,40 @@ function linked( program ) {
 
 }
 
-// the errors of compileShader and linkProgram are added to a report in the page, in every WebGL context
+function created( descriptor ) {
+
+	const source = descriptor && typeof descriptor.code === 'string' ? descriptor.code : '';
+	const name = descriptor && descriptor.label ? ' "' + descriptor.label + '"' : '';
+	const from = generation;
+
+	return function ( module ) {
+
+		module.getCompilationInfo().then( info => {
+
+			if ( from !== generation || hooks.length === 0 ) return;
+
+			const lines = source.split( '\n' );
+
+			for ( const m of info.messages ) {
+
+				if ( m.type === 'info' ) continue;
+
+				// the line is shown without its indentation, so the position moves with it
+				const line = lines[ m.lineNum - 1 ] || '';
+				const indent = line.length - line.trimStart().length;
+				const where = m.lineNum > 0 ? 'in line ' + m.lineNum + ' of the WGSL shader' + name : 'in the WGSL shader' + name;
+
+				addError( m.message, where, line.trim(), Math.max( 0, m.linePos - 1 - indent ), m.lineNum > 0 ? m.length : 0, m.type );
+
+			}
+
+		} ).catch( () => {} );
+
+	};
+
+}
+
+// the errors of the shaders are added to a report in the page, in every WebGL context and WebGPU device
 function install() {
 
 	if ( hooks.length > 0 ) return;
@@ -135,16 +177,28 @@ function install() {
 
 	}
 
+	if ( globalThis.GPUDevice !== undefined ) {
+
+		const proto = globalThis.GPUDevice.prototype;
+		const createShaderModule = proto.createShaderModule;
+		hooks.push( { proto, createShaderModule } );
+
+		proto.createShaderModule = function ( descriptor ) {
+
+			const read = created( descriptor );
+			const module = createShaderModule.apply( this, arguments );
+			read( module );
+			return module;
+
+		};
+
+	}
+
 }
 
 function uninstall() {
 
-	for ( const { proto, compileShader, linkProgram } of hooks ) {
-
-		proto.compileShader = compileShader;
-		proto.linkProgram = linkProgram;
-
-	}
+	for ( const { proto, ...methods } of hooks ) Object.assign( proto, methods );
 
 	hooks.length = 0;
 	clear();
@@ -153,6 +207,8 @@ function uninstall() {
 
 // removes the report from the page
 function clear() {
+
+	generation ++;
 
 	if ( report !== null ) {
 

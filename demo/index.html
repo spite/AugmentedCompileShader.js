@@ -14,24 +14,35 @@
 		textarea{ width: 100%; height: 260px; background: #1b1b1b; color: #eee; border: 1px solid #444; border-radius: 4px; padding: 8px; font-family: ui-monospace, monaco, monospace; font-size: 12px; line-height: 1.4; tab-size: 2; resize: vertical; white-space: pre; }
 		button{ margin: 8px 8px 0 0; padding: 5px 10px; background: #333; color: #eee; border: 1px solid #555; border-radius: 4px; font: inherit; cursor: pointer; }
 		button:hover{ background: #444; }
+		button:disabled{ opacity: .4; cursor: default; }
+		#tabs{ margin-bottom: 10px; }
+		#tabs button{ margin-top: 0; }
+		#tabs button.current{ background: #eee; color: #111; }
+		canvas.hidden{ display: none; }
 	</style>
 </head>
 <body>
-	<canvas id="canvas"></canvas>
+	<canvas id="webgl"></canvas>
+	<canvas id="webgpu" class="hidden"></canvas>
 	<div id="panel">
 		<p><b>Augmented compileShader</b> · <a href="https://github.com/spite/AugmentedCompileShader.js">GitHub</a></p>
 		<p>The fragment shader below is compiled as you type. Its errors show up at the top of the page, put there by the library. The canvas keeps the last shader that worked.</p>
+		<p id="tabs"><button id="glsl" class="current">GLSL · WebGL 2</button><button id="wgsl">WGSL · WebGPU</button></p>
 		<textarea id="source" spellcheck="false"></textarea>
-		<button id="fix">Working shader</button><button id="break">Shader with errors</button><button id="link">Link error</button>
+		<button id="fix">Working shader</button><button id="break">Shader with errors</button><button id="other"></button>
 	</div>
 	<script type="module">
 import { clear } from '../src/AugmentedCompileShader.js';
 
-const canvas = document.getElementById( 'canvas' );
 const textarea = document.getElementById( 'source' );
-const gl = canvas.getContext( 'webgl2' );
+const other = document.getElementById( 'other' );
 
-const vertexSource = `#version 300 es
+// ---- WebGL 2
+
+const glCanvas = document.getElementById( 'webgl' );
+const gl = glCanvas.getContext( 'webgl2' );
+
+const glVertex = `#version 300 es
 in vec2 position;
 out vec2 vUv;
 void main() {
@@ -39,7 +50,7 @@ void main() {
 	gl_Position = vec4( position, 0., 1. );
 }`;
 
-const working = `#version 300 es
+const glWorking = `#version 300 es
 precision highp float;
 
 uniform float time;
@@ -52,44 +63,161 @@ void main() {
 	float d = length( p );
 	float rings = .5 + .5 * sin( 40. * d - 3. * time );
 	vec3 c = mix( vec3( .14, .48, .63 ), vec3( .93, .42, .35 ), rings );
-	color = vec4( c * smoothstep( .9, .2, d ), 1. );
+	color = vec4( c * ( 1. - smoothstep( .2, .9, d ) ), 1. );
 }`;
 
-const broken = working
-	.replace( '3. * time', '3. * speed' )
-	.replace( 'vec3 c = mix', 'vec2 c = mix' );
+const glsl = {
+	canvas: glCanvas,
+	working: glWorking,
+	broken: glWorking.replace( '3. * time', '3. * speed' ).replace( 'vec3 c = mix', 'vec2 c = mix' ),
+	// asks for a varying that the vertex shader doesn't write
+	other: glWorking.replace( 'in vec2 vUv;', 'in vec2 vUv;\nin vec3 vNormal;' ).replace( '1. );\n}', '1. ) * vNormal.z;\n}' ),
+	otherLabel: 'Link error',
+	program: null,
+	build( source ) {
 
-// asks for a varying that the vertex shader doesn't write
-const unlinked = working.replace( 'in vec2 vUv;', 'in vec2 vUv;\nin vec3 vNormal;' ).replace( 'smoothstep( .9, .2, d )', 'smoothstep( .9, .2, d ) * vNormal.z' );
+		const compile = ( type, code ) => {
+
+			const shader = gl.createShader( type );
+			gl.shaderSource( shader, code );
+			gl.compileShader( shader );
+			return shader;
+
+		};
+
+		const next = gl.createProgram();
+		gl.attachShader( next, compile( gl.VERTEX_SHADER, glVertex ) );
+		gl.attachShader( next, compile( gl.FRAGMENT_SHADER, source ) );
+		gl.bindAttribLocation( next, 0, 'position' );
+		gl.linkProgram( next );
+
+		if ( gl.getProgramParameter( next, gl.LINK_STATUS ) ) this.program = next;
+
+	},
+	render( time, w, h ) {
+
+		if ( this.program === null ) return;
+
+		gl.viewport( 0, 0, w, h );
+		gl.useProgram( this.program );
+		gl.uniform1f( gl.getUniformLocation( this.program, 'time' ), time );
+		gl.uniform2f( gl.getUniformLocation( this.program, 'resolution' ), w, h );
+		gl.enableVertexAttribArray( 0 );
+		gl.vertexAttribPointer( 0, 2, gl.FLOAT, false, 0, 0 );
+		gl.drawArrays( gl.TRIANGLES, 0, 3 );
+
+	}
+};
 
 gl.bindBuffer( gl.ARRAY_BUFFER, gl.createBuffer() );
 gl.bufferData( gl.ARRAY_BUFFER, new Float32Array( [ - 1, - 1, 3, - 1, - 1, 3 ] ), gl.STATIC_DRAW );
 
-let program = null;
+// ---- WebGPU
 
-function compile( type, source ) {
+const gpuVertex = `@vertex
+fn main( @builtin( vertex_index ) index: u32 ) -> @builtin( position ) vec4f {
+	var corners = array( vec2f( - 1., - 1. ), vec2f( 3., - 1. ), vec2f( - 1., 3. ) );
+	return vec4f( corners[ index ], 0., 1. );
+}`;
 
-	const shader = gl.createShader( type );
-	gl.shaderSource( shader, source );
-	gl.compileShader( shader );
-	return shader;
-
+const gpuWorking = `struct Uniforms {
+	resolution: vec2f,
+	time: f32
 }
+
+@group( 0 ) @binding( 0 ) var<uniform> u: Uniforms;
+
+@fragment
+fn main( @builtin( position ) position: vec4f ) -> @location( 0 ) vec4f {
+	let p = ( position.xy - .5 * u.resolution ) / u.resolution.y;
+	let d = length( p );
+	let rings = .5 + .5 * sin( 40. * d - 3. * u.time );
+	let c = mix( vec3f( .63, .35, .75 ), vec3f( .96, .78, .3 ), rings );
+	return vec4f( c * ( 1. - smoothstep( .2, .9, d ) ), 1. );
+}`;
+
+const wgsl = {
+	canvas: document.getElementById( 'webgpu' ),
+	working: gpuWorking,
+	broken: gpuWorking.replace( '3. * u.time', '3. * u.speed' ),
+	// it compiles, with a warning about the code after the return
+	other: gpuWorking.replace( '1. );\n}', '1. );\n\tlet unused = d * 2.;\n}' ),
+	otherLabel: 'Warning',
+	device: null,
+	pipeline: null,
+	attempt: 0,
+	shown: 0,
+	async init() {
+
+		const adapter = navigator.gpu ? await navigator.gpu.requestAdapter() : null;
+		if ( ! adapter ) return false;
+
+		const device = this.device = await adapter.requestDevice();
+		this.format = navigator.gpu.getPreferredCanvasFormat();
+		this.context = this.canvas.getContext( 'webgpu' );
+		this.context.configure( { device, format: this.format, alphaMode: 'opaque' } );
+
+		this.uniforms = device.createBuffer( { size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST } );
+		const layout = device.createBindGroupLayout( { entries: [ { binding: 0, visibility: GPUShaderStage.FRAGMENT, buffer: {} } ] } );
+		this.layout = device.createPipelineLayout( { bindGroupLayouts: [ layout ] } );
+		this.bindGroup = device.createBindGroup( { layout, entries: [ { binding: 0, resource: { buffer: this.uniforms } } ] } );
+		this.vertex = device.createShaderModule( { code: gpuVertex, label: 'vertex' } );
+
+		return true;
+
+	},
+	build( source ) {
+
+		const device = this.device;
+		const attempt = ++ this.attempt;
+
+		// a module that doesn't compile is an error of the device too, this catches it
+		device.pushErrorScope( 'validation' );
+
+		const module = device.createShaderModule( { code: source, label: 'fragment' } );
+
+		device.createRenderPipelineAsync( {
+			layout: this.layout,
+			vertex: { module: this.vertex },
+			fragment: { module, targets: [ { format: this.format } ] }
+		} ).then( pipeline => {
+
+			// the newest one that works stays
+			if ( attempt < this.shown ) return;
+			this.shown = attempt;
+			this.pipeline = pipeline;
+
+		} ).catch( () => {} );
+
+		device.popErrorScope();
+
+	},
+	render( time, w, h ) {
+
+		if ( this.pipeline === null ) return;
+
+		this.device.queue.writeBuffer( this.uniforms, 0, new Float32Array( [ w, h, time, 0 ] ) );
+
+		const encoder = this.device.createCommandEncoder();
+		const pass = encoder.beginRenderPass( { colorAttachments: [ { view: this.context.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store' } ] } );
+		pass.setPipeline( this.pipeline );
+		pass.setBindGroup( 0, this.bindGroup );
+		pass.draw( 3 );
+		pass.end();
+		this.device.queue.submit( [ encoder.finish() ] );
+
+	}
+};
+
+// ---- the editor
+
+let mode = glsl;
 
 function build() {
 
 	// the report of the previous attempt goes away
 	clear();
-
-	const next = gl.createProgram();
-	gl.attachShader( next, compile( gl.VERTEX_SHADER, vertexSource ) );
-	gl.attachShader( next, compile( gl.FRAGMENT_SHADER, textarea.value ) );
-	gl.bindAttribLocation( next, 0, 'position' );
-	gl.linkProgram( next );
-
-	if ( ! gl.getProgramParameter( next, gl.LINK_STATUS ) ) return;
-
-	program = next;
+	mode.build( textarea.value );
 
 }
 
@@ -97,6 +225,21 @@ function set( source ) {
 
 	textarea.value = source;
 	build();
+
+}
+
+function show( next ) {
+
+	mode = next;
+
+	for ( const m of [ glsl, wgsl ] ) m.canvas.classList.toggle( 'hidden', m !== mode );
+	document.getElementById( 'glsl' ).classList.toggle( 'current', mode === glsl );
+	document.getElementById( 'wgsl' ).classList.toggle( 'current', mode === wgsl );
+	other.textContent = mode.otherLabel;
+
+	// the canvas starts with the working shader, the editor with the broken one
+	set( mode.working );
+	set( mode.broken );
 
 }
 
@@ -109,31 +252,35 @@ textarea.addEventListener( 'keydown', e => {
 	build();
 
 } );
-document.getElementById( 'fix' ).addEventListener( 'click', () => set( working ) );
-document.getElementById( 'break' ).addEventListener( 'click', () => set( broken ) );
-document.getElementById( 'link' ).addEventListener( 'click', () => set( unlinked ) );
+document.getElementById( 'fix' ).addEventListener( 'click', () => set( mode.working ) );
+document.getElementById( 'break' ).addEventListener( 'click', () => set( mode.broken ) );
+other.addEventListener( 'click', () => set( mode.other ) );
+document.getElementById( 'glsl' ).addEventListener( 'click', () => show( glsl ) );
 
-// the canvas starts with the working shader, the editor with the broken one
-set( working );
-set( broken );
+const wgslTab = document.getElementById( 'wgsl' );
+wgslTab.disabled = true;
+wgsl.init().then( available => {
+
+	wgslTab.disabled = ! available;
+	if ( available ) wgslTab.addEventListener( 'click', () => show( wgsl ) );
+	else wgslTab.title = 'This browser has no WebGPU';
+
+	if ( available && location.hash === '#wgsl' ) show( wgsl );
+
+} );
+
+show( glsl );
 
 function render( time ) {
 
 	requestAnimationFrame( render );
 
-	const w = Math.floor( canvas.clientWidth * devicePixelRatio );
-	const h = Math.floor( canvas.clientHeight * devicePixelRatio );
+	const canvas = mode.canvas;
+	const w = Math.max( 1, Math.floor( canvas.clientWidth * devicePixelRatio ) );
+	const h = Math.max( 1, Math.floor( canvas.clientHeight * devicePixelRatio ) );
 	if ( canvas.width !== w || canvas.height !== h ) { canvas.width = w; canvas.height = h; }
 
-	if ( program === null ) return;
-
-	gl.viewport( 0, 0, w, h );
-	gl.useProgram( program );
-	gl.uniform1f( gl.getUniformLocation( program, 'time' ), time / 1000 );
-	gl.uniform2f( gl.getUniformLocation( program, 'resolution' ), w, h );
-	gl.enableVertexAttribArray( 0 );
-	gl.vertexAttribPointer( 0, 2, gl.FLOAT, false, 0, 0 );
-	gl.drawArrays( gl.TRIANGLES, 0, 3 );
+	mode.render( time / 1000, w, h );
 
 }
 
